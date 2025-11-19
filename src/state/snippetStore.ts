@@ -9,6 +9,7 @@ interface SnippetState {
   updateSnippetMetadata: (update: SnippetMetadataUpdate) => void
   deleteSnippet: (id: string) => void
   reorderSnippetsForFileType: (fileType: string, orderedIds: string[]) => void
+  clearSnippets: () => void
 }
 
 export const useSnippetStore = create<SnippetState>()(
@@ -78,6 +79,7 @@ export const useSnippetStore = create<SnippetState>()(
 
           return { snippets: newSnippets }
         }),
+      clearSnippets: () => set(() => ({ snippets: [] })),
     }),
     {
       name: 'json-editor-snippets',

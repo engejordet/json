@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   ActionIcon,
   Button,
@@ -29,8 +29,14 @@ function createId() {
 }
 
 export function AdminView() {
-  const { snippets, addSnippet, updateSnippet, deleteSnippet, reorderSnippetsForFileType } =
-    useSnippetStore()
+  const {
+    snippets,
+    addSnippet,
+    updateSnippet,
+    deleteSnippet,
+    reorderSnippetsForFileType,
+    clearSnippets,
+  } = useSnippetStore()
 
   const [snippetText, setSnippetText] = useState('')
   const [snippetValue, setSnippetValue] = useState<JsonValue | undefined>()
@@ -122,6 +128,76 @@ export function AdminView() {
     // is saved using this file type.
     setFileType(raw)
     setCreatingFileType(false)
+  }
+
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+
+  const handleExportSnippets = () => {
+    if (!snippets.length) return
+    try {
+      const data = JSON.stringify(snippets, null, 2)
+      const blob = new Blob([data], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'snippets-export.json'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to export snippets', error)
+    }
+  }
+
+  const handleImportSnippetsFromFile: React.ChangeEventHandler<HTMLInputElement> = (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const text = String(reader.result ?? '')
+        const parsed = JSON.parse(text) as unknown
+        if (!Array.isArray(parsed)) {
+          throw new Error('Import JSON must be an array of snippets')
+        }
+        const now = new Date().toISOString()
+        parsed.forEach((raw) => {
+          const snippet = raw as SnippetDefinition
+          if (!snippet.id || !snippet.rootKey) return
+          const existing = snippets.find((s) => s.id === snippet.id)
+          const normalized: SnippetDefinition = {
+            ...snippet,
+            createdAt: snippet.createdAt ?? now,
+            updatedAt: now,
+          }
+          if (existing) {
+            updateSnippet({ ...existing, ...normalized })
+          } else {
+            addSnippet(normalized)
+          }
+        })
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to import snippets', error)
+        // eslint-disable-next-line no-alert
+        alert('Failed to import snippets. Please check the JSON format.')
+      } finally {
+        event.target.value = ''
+      }
+    }
+    reader.readAsText(file)
+  }
+
+  const handleClearAllSnippets = () => {
+    if (!snippets.length) return
+    // eslint-disable-next-line no-alert
+    const confirmed = window.confirm('Remove all snippets? This cannot be undone.')
+    if (!confirmed) return
+    clearSnippets()
+    handleCancelEditing()
   }
 
   const handleParseSnippet = () => {
@@ -294,10 +370,17 @@ export function AdminView() {
           flex: 1,
           minHeight: 0,
           display: 'grid',
-          gridTemplateColumns: 'minmax(0, 0.3fr) minmax(0, 0.35fr) minmax(0, 0.35fr)',
-          gap: 0,
+          gridTemplateRows: '1fr auto',
         }}
       >
+        <Box
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 0.3fr) minmax(0, 0.35fr) minmax(0, 0.35fr)',
+            gap: 0,
+            minHeight: 0,
+          }}
+        >
         {/* Column 1: Snippets */}
         <Card
           withBorder
@@ -525,6 +608,47 @@ export function AdminView() {
             )}
           </Box>
         </Card>
+        </Box>
+
+        {/* Bottom actions: Export / Import / Clear */}
+        <Box
+          px="md"
+          py="xs"
+          style={{
+            borderTop: '1px solid rgba(255, 255, 255, 0.12)',
+            backgroundColor: '#111317',
+          }}
+        >
+          <Group justify="space-between" align="center">
+            <Text size="xs" c="dimmed">
+              Snippet data
+            </Text>
+            <Group gap="xs">
+              <Button size="xs" variant="default" onClick={handleExportSnippets}>
+                Export Snippets
+              </Button>
+              <Button
+                size="xs"
+                variant="default"
+                onClick={() => {
+                  importInputRef.current?.click()
+                }}
+              >
+                Import Snippets
+              </Button>
+              <Button size="xs" color="red" variant="outline" onClick={handleClearAllSnippets}>
+                Remove Snippets
+              </Button>
+            </Group>
+          </Group>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json"
+            style={{ display: 'none' }}
+            onChange={handleImportSnippetsFromFile}
+          />
+        </Box>
       </Box>
     </Box>
   )
