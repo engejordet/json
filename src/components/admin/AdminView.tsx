@@ -11,15 +11,19 @@ import {
   Alert,
   Box,
   Stack,
+  Menu,
+  Modal,
+  CopyButton,
 } from '@mantine/core'
-import { IconInfoCircle, IconPlus } from '@tabler/icons-react'
+import { IconDotsVertical, IconInfoCircle, IconPlus, IconArrowLeft, IconTrash } from '@tabler/icons-react'
 import { useSnippetStore } from '../../state/snippetStore'
-import { prettyPrintJson, safeParseJson, setIn } from '../../utils/jsonUtils'
+import { prettyPrintJson, safeParseJson, setIn, isHexColor, isRgbaColor, hasAlphaChannel } from '../../utils/jsonUtils'
 import { detectSnippetConfigFromJson } from '../../utils/fieldDetection'
 import type { FieldConfig, SnippetDefinition, JsonValue } from '../../types/snippets'
 import { FieldConfigTree } from './FieldConfigTree'
 import { SnippetSidebar } from './SnippetSidebar'
 import { JsonCodeEditor } from '../common/JsonCodeEditor'
+import { COLUMN_HEADER_MIN_HEIGHT } from '../../constants/layout'
 
 function createId() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -33,6 +37,7 @@ export function AdminView() {
     snippets,
     addSnippet,
     updateSnippet,
+    updateSnippetMetadata,
     deleteSnippet,
     reorderSnippetsForFileType,
     clearSnippets,
@@ -41,6 +46,7 @@ export function AdminView() {
   const [snippetText, setSnippetText] = useState('')
   const [snippetValue, setSnippetValue] = useState<JsonValue | undefined>()
   const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
   const [fileType, setFileType] = useState('config.json')
   const [accordionGroup, setAccordionGroup] = useState('General')
   const [creatingFileType, setCreatingFileType] = useState(false)
@@ -64,15 +70,19 @@ export function AdminView() {
 
   const [sidebarFileType, setSidebarFileType] = useState<string | 'all'>('all')
   const [sidebarSearch, setSidebarSearch] = useState('')
+  const [deleteEnabled, setDeleteEnabled] = useState(false)
+  const [duplicateRootKeyModal, setDuplicateRootKeyModal] = useState<{
+    open: boolean
+    existingSnippet: SnippetDefinition | null
+  }>({ open: false, existingSnippet: null })
 
   const snippetsForSidebar = useMemo(() => {
     let list = snippets
     if (sidebarFileType !== 'all') {
       list = list.filter((s) => s.fileType === sidebarFileType)
-    } else {
-      // In "all" view, show snippets alphabetically by name
-      list = [...list].sort((a, b) => a.name.localeCompare(b.name))
     }
+    // In "all" view, use the global order from the snippets array (no sorting)
+    // This preserves the order set by drag-and-drop
 
     const query = sidebarSearch.trim().toLowerCase()
     if (query.length >= 2) {
@@ -91,6 +101,13 @@ export function AdminView() {
     }
     return groups
   }, [snippets, fileType, accordionGroup])
+
+  // Check if current snippetText is valid JSON
+  const hasValidJson = useMemo(() => {
+    if (!snippetText.trim()) return false
+    const { error } = safeParseJson(snippetText)
+    return !error
+  }, [snippetText])
 
   const handleConfirmNewAccordionGroup = () => {
     const raw = newAccordionGroup.trim()
@@ -226,6 +243,54 @@ export function AdminView() {
     }
   }
 
+  const handlePasteSnippetFromClipboard = async () => {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.readText) {
+        // eslint-disable-next-line no-alert
+        alert('Clipboard API not available in this browser.')
+        return
+      }
+      const text = await navigator.clipboard.readText()
+      if (!text) return
+
+      // Clear current editing context and load new snippet text
+      setEditingId(null)
+      setDetectedFields(null)
+      setRootKey(null)
+      setParseError(undefined)
+      setName('')
+      setDescription('')
+      setSnippetText(text)
+      setSnippetValue(undefined)
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to read from clipboard', error)
+      // eslint-disable-next-line no-alert
+      alert('Failed to read from clipboard. Please try again or paste manually.')
+    }
+  }
+
+  const handleClearSnippetEditor = () => {
+    // Deselect any snippet and clear the JSON editor content
+    setEditingId(null)
+    setDetectedFields(null)
+    setRootKey(null)
+    setParseError(undefined)
+    setName('')
+    setDescription('')
+    setSnippetText('')
+    setSnippetValue(undefined)
+  }
+
+  const handleDeleteEditingSnippet = () => {
+    if (!editingId) return
+    // eslint-disable-next-line no-alert
+    const confirmed = window.confirm(`Delete snippet "${name || 'Untitled'}"? This cannot be undone.`)
+    if (!confirmed) return
+    deleteSnippet(editingId)
+    handleClearSnippetEditor()
+  }
+
   const handleToggleEditable = (fieldId: string, editable: boolean) => {
     if (!detectedFields) return
     const updated = toggleEditableInTree(detectedFields, fieldId, editable)
@@ -273,11 +338,18 @@ export function AdminView() {
     setDetectedFields(updated)
   }
 
+  const handleChangeFieldType = (fieldId: string, newType: 'string' | 'number' | 'color-solid' | 'color-alpha') => {
+    if (!detectedFields) return
+    const updated = updateFieldTypeInTree(detectedFields, fieldId, newType)
+    setDetectedFields(updated)
+  }
+
   const handleEditSnippetFields = (snippet: SnippetDefinition) => {
     setEditingId(snippet.id)
     setSnippetText(snippet.snippetText)
     setSnippetValue(snippet.parsedSnippet)
     setName(snippet.name)
+    setDescription(snippet.description ?? '')
     setFileType(snippet.fileType)
     setAccordionGroup(snippet.accordionGroup)
     setParseError(undefined)
@@ -297,6 +369,42 @@ export function AdminView() {
     setParseError(undefined)
   }
 
+  const handleReplaceWithSnippet = (targetSnippet: SnippetDefinition) => {
+    // Clear editing state - treat this as a new configuration
+    setEditingId(null)
+    
+    // Clear parse error first (same as handleParseSnippet)
+    setParseError(undefined)
+    setDetectedFields(null)
+    setRootKey(null)
+
+    // Parse and validate the current JSON (same validation as handleParseSnippet)
+    const { value, error } = safeParseJson(snippetText)
+    if (error || !value) {
+      setParseError(error ?? 'Invalid JSON')
+      return
+    }
+
+    // Format the JSON (same as handleParseSnippet)
+    const pretty = prettyPrintJson(value)
+    if (pretty && pretty !== snippetText) {
+      setSnippetText(pretty)
+    }
+
+    setSnippetValue(value)
+
+    // Automatically detect fields from the new JSON (same as handleParseSnippet)
+    const { rootKey: detectedRootKey, fields } = detectSnippetConfigFromJson(value)
+    setDetectedFields(fields)
+    setRootKey(detectedRootKey)
+    
+    // Keep the target snippet's metadata (name, description, fileType, accordionGroup)
+    setName(targetSnippet.name)
+    setDescription(targetSnippet.description ?? '')
+    setFileType(targetSnippet.fileType)
+    setAccordionGroup(targetSnippet.accordionGroup)
+  }
+
   const handleSaveSnippet = () => {
     if (!detectedFields || !rootKey) return
     const { value } = safeParseJson(snippetText)
@@ -309,6 +417,7 @@ export function AdminView() {
       const updated: SnippetDefinition = {
         ...existing,
         name: name || prettifyKey(rootKey),
+        description: description || undefined,
         fileType,
         accordionGroup,
         snippetText,
@@ -319,9 +428,20 @@ export function AdminView() {
       }
       updateSnippet(updated)
     } else {
+      // Check if a snippet with the same rootKey and fileType already exists
+      const existingSnippetWithRootKey = snippets.find(
+        (s) => s.rootKey === rootKey && s.fileType === fileType && s.id !== editingId,
+      )
+      if (existingSnippetWithRootKey) {
+        // Ask user if they want to replace or drop
+        setDuplicateRootKeyModal({ open: true, existingSnippet: existingSnippetWithRootKey })
+        return
+      }
+
       const snippet: SnippetDefinition = {
         id: createId(),
         name: name || prettifyKey(rootKey),
+        description: description || undefined,
         fileType,
         accordionGroup,
         snippetText,
@@ -334,12 +454,35 @@ export function AdminView() {
       addSnippet(snippet)
     }
 
-    // reset form
-    setSnippetText('')
-    setName('')
-    setDetectedFields(null)
-    setRootKey(null)
-    setEditingId(null)
+    // Don't reset form - keep the snippet open for editing
+  }
+
+  const handleReplaceDuplicate = () => {
+    if (!detectedFields || !rootKey || !duplicateRootKeyModal.existingSnippet) return
+    const { value } = safeParseJson(snippetText)
+    if (!value) return
+
+    const now = new Date().toISOString()
+    const updated: SnippetDefinition = {
+      ...duplicateRootKeyModal.existingSnippet,
+      name: name || prettifyKey(rootKey),
+      description: description || undefined,
+      fileType,
+      accordionGroup,
+      snippetText,
+      parsedSnippet: value,
+      rootKey,
+      fields: detectedFields,
+      updatedAt: now,
+    }
+    updateSnippet(updated)
+    setDuplicateRootKeyModal({ open: false, existingSnippet: null })
+    // Set editing mode to the replaced snippet
+    setEditingId(updated.id)
+  }
+
+  const handleDropDuplicate = () => {
+    setDuplicateRootKeyModal({ open: false, existingSnippet: null })
   }
 
   const canSave = Boolean(detectedFields && rootKey && snippetText.trim())
@@ -348,7 +491,7 @@ export function AdminView() {
   return (
     <Box
       style={{
-        height: 'calc(100vh - 60px)',
+        height: 'calc(100vh - 52px)',
         display: 'flex',
         flexDirection: 'column',
       }}
@@ -370,13 +513,12 @@ export function AdminView() {
           flex: 1,
           minHeight: 0,
           display: 'grid',
-          gridTemplateRows: '1fr auto',
         }}
       >
         <Box
           style={{
             display: 'grid',
-            gridTemplateColumns: 'minmax(0, 0.3fr) minmax(0, 0.35fr) minmax(0, 0.35fr)',
+            gridTemplateColumns: '360px 480px minmax(0, 1fr)',
             gap: 0,
             minHeight: 0,
           }}
@@ -385,15 +527,28 @@ export function AdminView() {
         <Card
           withBorder
           radius={0}
+          p={0}
           style={{
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
           }}
         >
-          <Group justify="space-between" align="center" p="xs" style={{ flexShrink: 0, borderBottom: '1px solid rgba(255, 255, 255, 0.08)', minHeight: 44 }}>
+          <Group
+            justify="space-between"
+            align="center"
+            wrap="nowrap"
+            p="xs"
+            style={{
+              flexShrink: 0,
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              minHeight: COLUMN_HEADER_MIN_HEIGHT,
+              maxHeight: COLUMN_HEADER_MIN_HEIGHT,
+              overflow: 'hidden',
+            }}
+          >
             <Text fw={500}>Snippets</Text>
-            <Group gap={6}>
+            <Group gap={6} wrap="nowrap">
               <Select
                 size="xs"
                 data={['all', ...fileTypeOptions]}
@@ -411,20 +566,61 @@ export function AdminView() {
                 onChange={(e) => setSidebarSearch(e.currentTarget.value)}
                 w={120}
               />
+              <Menu withinPortal position="bottom-end" shadow="md">
+                <Menu.Target>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    aria-label="Snippet actions"
+                  >
+                    <IconDotsVertical size={14} />
+                  </ActionIcon>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Item onClick={handleExportSnippets}>Export snippets…</Menu.Item>
+                  <Menu.Item
+                    onClick={() => {
+                      importInputRef.current?.click()
+                    }}
+                  >
+                    Import snippets…
+                  </Menu.Item>
+                  <Menu.Item color="red" onClick={handleClearAllSnippets}>
+                    Remove all snippets
+                  </Menu.Item>
+                  <Menu.Divider />
+                  <Menu.Item onClick={() => setDeleteEnabled((v) => !v)}>
+                    {deleteEnabled ? 'Disable delete' : 'Enable delete'}
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
             </Group>
           </Group>
           <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
             <SnippetSidebar
               snippets={snippetsForSidebar}
-              activeId={editingId ?? null}
               onSelect={handleEditSnippetFields}
               onReorder={(orderedIds) =>
                 reorderSnippetsForFileType(sidebarFileType, orderedIds)
               }
+              onMove={(snippetId, newFileType, newGroup) => {
+                updateSnippetMetadata({
+                  id: snippetId,
+                  fileType: newFileType,
+                  accordionGroup: newGroup,
+                })
+              }}
               onDelete={deleteSnippet}
-              enableSorting={sidebarFileType !== 'all'}
+              showDelete={deleteEnabled}
             />
           </Box>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json"
+            style={{ display: 'none' }}
+            onChange={handleImportSnippetsFromFile}
+          />
         </Card>
 
         {/* Column 2: JSON snippet */}
@@ -441,20 +637,293 @@ export function AdminView() {
           <Group
             justify="space-between"
             align="center"
+            wrap="nowrap"
             p="xs"
-            style={{ flexShrink: 0, borderBottom: '1px solid rgba(255, 255, 255, 0.08)', minHeight: 44 }}
+            style={{
+              flexShrink: 0,
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              minHeight: COLUMN_HEADER_MIN_HEIGHT,
+              maxHeight: COLUMN_HEADER_MIN_HEIGHT,
+              overflow: 'hidden',
+            }}
           >
-            <Text fw={500}>JSON snippet</Text>
-            {!isEditing && (
-              <Button size="xs" variant="light" onClick={handleParseSnippet}>
-                Make Snippet
-              </Button>
+            <Text fw={500}>Snippet Config</Text>
+            <Group gap="xs" wrap="nowrap">
+              {isEditing && (
+                <Button size="xs" variant="default" onClick={handleClearSnippetEditor}>
+                  Exit
+                </Button>
+              )}
+              {canSave && (
+                <Button
+                  size="xs"
+                  variant="filled"
+                  onClick={handleSaveSnippet}
+                  style={{ flexShrink: 0 }}
+                >
+                  {isEditing ? 'Update' : 'Save Snippet'}
+                </Button>
+              )}
+              {isEditing && (
+                <Menu withinPortal position="bottom-end" shadow="md">
+                  <Menu.Target>
+                    <ActionIcon
+                      size="sm"
+                      variant="subtle"
+                      aria-label="Snippet actions"
+                    >
+                      <IconDotsVertical size={14} />
+                    </ActionIcon>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    <Menu.Item
+                      color="red"
+                      leftSection={<IconTrash size={14} />}
+                      onClick={handleDeleteEditingSnippet}
+                    >
+                      Delete snippet
+                    </Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
+              )}
+            </Group>
+          </Group>
+          {detectedFields && (
+            <Stack gap="xs" px="xs" mb="xs" style={{ flexShrink: 0 }}>
+              <Group grow gap="xs" align="flex-end">
+                {creatingFileType ? (
+                  <TextInput
+                    label="File type"
+                    size="xs"
+                    value={newFileType}
+                    placeholder="New file type"
+                    onChange={(e) => setNewFileType(e.currentTarget.value)}
+                    rightSectionPointerEvents="auto"
+                    rightSection={
+                      <ActionIcon
+                        size="xs"
+                        variant="subtle"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          handleConfirmNewFileType()
+                        }}
+                      >
+                        <IconPlus size={14} />
+                      </ActionIcon>
+                    }
+                  />
+                ) : (
+                  <Select
+                    label={
+                      <Group gap={4} align="center">
+                        <Text size="xs">File type</Text>
+                        <ActionIcon
+                          size="xs"
+                          variant="subtle"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            setNewFileType('')
+                            setCreatingFileType(true)
+                          }}
+                        >
+                          <IconPlus size={12} />
+                        </ActionIcon>
+                      </Group>
+                    }
+                    size="xs"
+                    data={fileTypeOptions}
+                    value={fileType}
+                    searchable
+                    onChange={(value) => value && setFileType(value)}
+                  />
+                )}
+
+                {creatingAccordionGroup ? (
+                  <TextInput
+                    label="Group"
+                    size="xs"
+                    value={newAccordionGroup}
+                    placeholder="New accordion group"
+                    onChange={(e) => setNewAccordionGroup(e.currentTarget.value)}
+                    rightSectionPointerEvents="auto"
+                    rightSection={
+                      <ActionIcon
+                        size="xs"
+                        variant="subtle"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          handleConfirmNewAccordionGroup()
+                        }}
+                      >
+                        <IconPlus size={14} />
+                      </ActionIcon>
+                    }
+                  />
+                ) : (
+                  <Select
+                    label={
+                      <Group gap={4} align="center">
+                        <Text size="xs">Group</Text>
+                        <ActionIcon
+                          size="xs"
+                          variant="subtle"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            setNewAccordionGroup('')
+                            setCreatingAccordionGroup(true)
+                          }}
+                        >
+                          <IconPlus size={12} />
+                        </ActionIcon>
+                      </Group>
+                    }
+                    size="xs"
+                    data={accordionGroupOptions}
+                    value={accordionGroup}
+                    searchable
+                    onChange={(value) => {
+                      if (value) setAccordionGroup(value)
+                    }}
+                  />
+                )}
+
+                <TextInput
+                  label="Name"
+                  size="xs"
+                  value={name}
+                  onChange={(e) => setName(e.currentTarget.value)}
+                />
+              </Group>
+              <TextInput
+                label="Description"
+                size="xs"
+                value={description}
+                onChange={(e) => setDescription(e.currentTarget.value)}
+                placeholder="Optional explanation shown in editor tooltip"
+              />
+            </Stack>
+          )}
+          <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto' }} px="xs">
+            {detectedFields && (
+              <FieldConfigTree
+                fields={detectedFields}
+                onToggleEditable={handleToggleEditable}
+                onChangeDefault={handleChangeDefault}
+                onChangeNumberBounds={handleChangeNumberBounds}
+                onChangeFieldType={handleChangeFieldType}
+              />
             )}
+          </Box>
+        </Card>
+
+        {/* Column 3: Snippet Config */}
+        <Card
+          withBorder
+          radius={0}
+          p={0}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+        >
+          <Group
+            justify="space-between"
+            align="center"
+            wrap="nowrap"
+            p="xs"
+            style={{
+              flexShrink: 0,
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              minHeight: COLUMN_HEADER_MIN_HEIGHT,
+              maxHeight: COLUMN_HEADER_MIN_HEIGHT,
+              overflow: 'hidden',
+            }}
+          >
+            <Text fw={500}>Snippet JSON</Text>
+            <Group gap="xs" wrap="nowrap">
+              {snippetText.trim().length > 0 && (
+                <CopyButton value={snippetText}>
+                  {({ copied, copy }) => (
+                    <Button size="xs" variant="light" onClick={copy}>
+                      {copied ? 'Copied' : 'Copy'}
+                    </Button>
+                  )}
+                </CopyButton>
+              )}
+              {snippetText.trim().length === 0 && (
+                <Button size="xs" variant="default" onClick={handlePasteSnippetFromClipboard}>
+                  Paste
+                </Button>
+              )}
+              {!isEditing && snippetText.trim().length > 0 && (
+                <Button size="xs" variant="light" onClick={handleParseSnippet}>
+                  <IconArrowLeft size={14} style={{ marginRight: 4 }} />
+                  Make Snippet
+                </Button>
+              )}
+              {!isEditing && hasValidJson && snippets.length > 0 && (
+                <Menu withinPortal position="bottom-end" shadow="md">
+                  <Menu.Target>
+                    <ActionIcon
+                      size="sm"
+                      variant="subtle"
+                      aria-label="Leave snippet"
+                    >
+                      <IconDotsVertical size={14} />
+                    </ActionIcon>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    {(() => {
+                      // Group snippets by file type, then by accordion group
+                      const fileTypeGroups = new Map<string, Map<string, SnippetDefinition[]>>()
+                      for (const snippet of snippets) {
+                        const ft = snippet.fileType
+                        const group = snippet.accordionGroup || 'General'
+                        
+                        if (!fileTypeGroups.has(ft)) {
+                          fileTypeGroups.set(ft, new Map())
+                        }
+                        const groups = fileTypeGroups.get(ft)!
+                        const list = groups.get(group) ?? []
+                        list.push(snippet)
+                        groups.set(group, list)
+                      }
+                      
+                      const items: JSX.Element[] = []
+                      for (const [fileType, groups] of fileTypeGroups.entries()) {
+                        items.push(<Menu.Label key={fileType}>{fileType}</Menu.Label>)
+                        for (const [groupName, groupSnippets] of groups.entries()) {
+                          items.push(<Menu.Label key={`${fileType}-${groupName}`}>{groupName}</Menu.Label>)
+                          for (const snippet of groupSnippets) {
+                            items.push(
+                              <Menu.Item
+                                key={snippet.id}
+                                onClick={() => handleReplaceWithSnippet(snippet)}
+                              >
+                                Leave snippet: {snippet.name}
+                              </Menu.Item>
+                            )
+                          }
+                        }
+                      }
+                      return items
+                    })()}
+                  </Menu.Dropdown>
+                </Menu>
+              )}
+            </Group>
           </Group>
           <Box style={{ flex: 1, minHeight: 0 }}>
             <JsonCodeEditor
               value={snippetText}
-              onChange={setSnippetText}
+              onChange={isEditing ? undefined : setSnippetText}
+              readOnly={isEditing}
+              showColorSwatches={isEditing}
               height="100%"
             />
           </Box>
@@ -465,191 +934,35 @@ export function AdminView() {
           )}
         </Card>
 
-        {/* Column 3: Detected fields */}
-        <Card
-          withBorder
-          radius={0}
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-          }}
-        >
-          <Group justify="space-between" align="center" p="xs" mb="xs" style={{ flexShrink: 0, borderBottom: '1px solid rgba(255, 255, 255, 0.08)', minHeight: 44 }}>
-            <Text fw={500}>Snippet Config</Text>
-            <Button size="xs" onClick={handleSaveSnippet} disabled={!canSave}>
-              {isEditing ? 'Update Snippet' : 'Save Snippet'}
-            </Button>
-          </Group>
-          <Stack gap="xs" px="xs" mb="xs" style={{ flexShrink: 0 }}>
-            <Group grow gap="xs" align="flex-end">
-              {creatingFileType ? (
-                <TextInput
-                  label="File type"
-                  size="xs"
-                  value={newFileType}
-                  placeholder="New file type"
-                  onChange={(e) => setNewFileType(e.currentTarget.value)}
-                  rightSectionPointerEvents="auto"
-                  rightSection={
-                    <ActionIcon
-                      size="xs"
-                      variant="subtle"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        handleConfirmNewFileType()
-                      }}
-                    >
-                      <IconPlus size={14} />
-                    </ActionIcon>
-                  }
-                />
-              ) : (
-                <Select
-                  label={
-                    <Group gap={4} align="center">
-                      <Text size="xs">File type</Text>
-                      <ActionIcon
-                        size="xs"
-                        variant="subtle"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          setNewFileType('')
-                          setCreatingFileType(true)
-                        }}
-                      >
-                        <IconPlus size={12} />
-                      </ActionIcon>
-                    </Group>
-                  }
-                  size="xs"
-                  data={fileTypeOptions}
-                  value={fileType}
-                  searchable
-                  onChange={(value) => value && setFileType(value)}
-                />
-              )}
 
-              {creatingAccordionGroup ? (
-                <TextInput
-                  label="Group"
-                  size="xs"
-                  value={newAccordionGroup}
-                  placeholder="New accordion group"
-                  onChange={(e) => setNewAccordionGroup(e.currentTarget.value)}
-                  rightSectionPointerEvents="auto"
-                  rightSection={
-                    <ActionIcon
-                      size="xs"
-                      variant="subtle"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        handleConfirmNewAccordionGroup()
-                      }}
-                    >
-                      <IconPlus size={14} />
-                    </ActionIcon>
-                  }
-                />
-              ) : (
-                <Select
-                  label={
-                    <Group gap={4} align="center">
-                      <Text size="xs">Group</Text>
-                      <ActionIcon
-                        size="xs"
-                        variant="subtle"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          setNewAccordionGroup('')
-                          setCreatingAccordionGroup(true)
-                        }}
-                      >
-                        <IconPlus size={12} />
-                      </ActionIcon>
-                    </Group>
-                  }
-                  size="xs"
-                  data={accordionGroupOptions}
-                  value={accordionGroup}
-                  searchable
-                  onChange={(value) => {
-                    if (value) setAccordionGroup(value)
-                  }}
-                />
-              )}
-
-              <TextInput
-                label="Name"
-                size="xs"
-                value={name}
-                onChange={(e) => setName(e.currentTarget.value)}
-              />
-            </Group>
-          </Stack>
-          <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto' }} px="xs">
-            {!detectedFields && (
-              <Text size="sm" c="dimmed">
-                Run &quot;Detect fields&quot; to inspect the snippet structure and choose
-                which fields are editable.
-              </Text>
-            )}
-            {detectedFields && (
-              <FieldConfigTree
-                fields={detectedFields}
-                onToggleEditable={handleToggleEditable}
-                onChangeDefault={handleChangeDefault}
-                onChangeNumberBounds={handleChangeNumberBounds}
-              />
-            )}
-          </Box>
-        </Card>
-        </Box>
-
-        {/* Bottom actions: Export / Import / Clear */}
-        <Box
-          px="md"
-          py="xs"
-          style={{
-            borderTop: '1px solid rgba(255, 255, 255, 0.12)',
-            backgroundColor: '#111317',
-          }}
-        >
-          <Group justify="space-between" align="center">
-            <Text size="xs" c="dimmed">
-              Snippet data
-            </Text>
-            <Group gap="xs">
-              <Button size="xs" variant="default" onClick={handleExportSnippets}>
-                Export Snippets
-              </Button>
-              <Button
-                size="xs"
-                variant="default"
-                onClick={() => {
-                  importInputRef.current?.click()
-                }}
-              >
-                Import Snippets
-              </Button>
-              <Button size="xs" color="red" variant="outline" onClick={handleClearAllSnippets}>
-                Remove Snippets
-              </Button>
-            </Group>
-          </Group>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept="application/json"
-            style={{ display: 'none' }}
-            onChange={handleImportSnippetsFromFile}
-          />
         </Box>
       </Box>
+      <Modal
+        opened={duplicateRootKeyModal.open}
+        onClose={handleDropDuplicate}
+        title="Duplicate Root Key"
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            A snippet with the root key <strong>"{duplicateRootKeyModal.existingSnippet?.rootKey}"</strong> already exists.
+          </Text>
+          <Text size="sm" c="dimmed">
+            Existing snippet: <strong>{duplicateRootKeyModal.existingSnippet?.name}</strong> ({duplicateRootKeyModal.existingSnippet?.fileType} / {duplicateRootKeyModal.existingSnippet?.accordionGroup})
+          </Text>
+          <Text size="sm">
+            Would you like to replace the existing snippet or drop this save?
+          </Text>
+          <Group justify="flex-end" gap="xs">
+            <Button variant="subtle" onClick={handleDropDuplicate}>
+              Drop
+            </Button>
+            <Button onClick={handleReplaceDuplicate}>
+              Replace
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Box>
   )
 }
@@ -709,6 +1022,86 @@ function updateNumberBoundsInTree(
       return {
         ...field,
         children: updateNumberBoundsInTree(field.children, fieldId, bounds),
+      } as FieldConfig
+    }
+    return field
+  })
+}
+
+function updateFieldTypeInTree(
+  fields: FieldConfig[],
+  fieldId: string,
+  newType: 'string' | 'number' | 'color-solid' | 'color-alpha',
+): FieldConfig[] {
+  return fields.map((field) => {
+    if (field.id === fieldId && 'defaultValue' in field) {
+      const currentValue = field.defaultValue
+      let newField: FieldConfig
+
+      if (newType === 'string') {
+        newField = {
+          ...field,
+          kind: 'string',
+          defaultValue: typeof currentValue === 'string' ? currentValue : String(currentValue ?? ''),
+        } as FieldConfig
+      } else if (newType === 'number') {
+        const numValue = typeof currentValue === 'number' 
+          ? currentValue 
+          : (typeof currentValue === 'string' 
+            ? parseFloat(currentValue.replace(/\s/g, '')) || 0 
+            : 0)
+        newField = {
+          ...field,
+          kind: 'number',
+          defaultValue: numValue,
+          min: undefined,
+          max: undefined,
+        } as FieldConfig
+      } else if (newType === 'color-solid') {
+        let colorValue = '#000000'
+        if (typeof currentValue === 'string' && (isHexColor(currentValue) || isRgbaColor(currentValue))) {
+          // Remove alpha channel if present (convert 8-char hex to 6-char, or 4-char to 3-char)
+          if (currentValue.length === 9) {
+            colorValue = currentValue.substring(0, 7) // #RRGGBBAA -> #RRGGBB
+          } else if (currentValue.length === 5) {
+            colorValue = currentValue.substring(0, 4) // #RGBA -> #RGB
+          } else {
+            colorValue = currentValue
+          }
+        }
+        newField = {
+          ...field,
+          kind: 'color',
+          defaultValue: colorValue,
+          supportsAlpha: false,
+        } as FieldConfig
+      } else { // color-alpha
+        let colorValue = '#000000FF'
+        if (typeof currentValue === 'string' && (isHexColor(currentValue) || isRgbaColor(currentValue))) {
+          // Ensure it has alpha channel (convert 6-char hex to 8-char, or 3-char to 4-char)
+          if (currentValue.length === 7) {
+            colorValue = currentValue + 'FF' // #RRGGBB -> #RRGGBBFF
+          } else if (currentValue.length === 4) {
+            colorValue = currentValue + 'F' // #RGB -> #RGBF
+          } else if (hasAlphaChannel(currentValue)) {
+            colorValue = currentValue
+          } else {
+            colorValue = currentValue + 'FF'
+          }
+        }
+        newField = {
+          ...field,
+          kind: 'color',
+          defaultValue: colorValue,
+          supportsAlpha: true,
+        } as FieldConfig
+      }
+      return newField
+    }
+    if ('children' in field && field.children) {
+      return {
+        ...field,
+        children: updateFieldTypeInTree(field.children, fieldId, newType),
       } as FieldConfig
     }
     return field

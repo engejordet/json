@@ -48,3 +48,12 @@ button {
 *::-webkit-scrollbar-thumb:hover {
   background-color: rgba(155, 155, 155, 0.9);
 }
+
+@keyframes flashHighlight {
+  0%, 100% {
+    background-color: rgba(255, 100, 100, 0.3);
+  }
+  50% {
+    background-color: rgba(255, 100, 100, 0.6);
+  }
+}

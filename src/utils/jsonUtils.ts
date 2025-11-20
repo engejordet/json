@@ -42,6 +42,45 @@ export function hasAlphaChannel(value: string): boolean {
   return false
 }
 
+/**
+ * Converts rgba/rgb color to hex format.
+ * If the color already is hex, returns it as-is.
+ * If it has alpha, converts to 8-digit hex (#RRGGBBAA).
+ * If no alpha, converts to 6-digit hex (#RRGGBB).
+ */
+export function convertColorToHex(color: string): string {
+  if (isHexColor(color)) {
+    return color
+  }
+  
+  if (isRgbaColor(color)) {
+    const match = color.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:,\s*([\d.]+))?\)/i)
+    if (!match) return color
+    
+    const r = parseInt(match[1]!, 10)
+    const g = parseInt(match[2]!, 10)
+    const b = parseInt(match[3]!, 10)
+    const a = match[4] ? parseFloat(match[4]) : undefined
+    
+    const toHex = (n: number) => {
+      const hex = Math.round(n).toString(16).padStart(2, '0')
+      return hex.length === 1 ? '0' + hex : hex
+    }
+    
+    const hex = `#${toHex(r)}${toHex(g)}${toHex(b)}`
+    
+    if (a !== undefined && a < 1) {
+      // Convert alpha (0-1) to hex (0-255)
+      const alphaHex = Math.round(a * 255).toString(16).padStart(2, '0')
+      return hex + alphaHex
+    }
+    
+    return hex
+  }
+  
+  return color
+}
+
 /** Deeply set a value in an object/array given a path of keys/indices. Returns a new structure. */
 export function setIn(root: JsonValue, path: (string | number)[], newValue: JsonValue): JsonValue {
   if (path.length === 0) return newValue

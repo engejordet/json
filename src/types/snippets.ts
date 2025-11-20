@@ -67,6 +67,8 @@ export type FieldConfig =
 export interface SnippetDefinition {
   id: string
   name: string
+  /** Optional description shown as tooltip in editor snippet list */
+  description?: string
   /** e.g. "config.json", "settings.json" */
   fileType: string
   /** e.g. "POI info" – used as accordion group label in editor */
@@ -86,6 +88,7 @@ export interface SnippetDefinition {
 export interface SnippetMetadataUpdate {
   id: string
   name?: string
+  description?: string
   fileType?: string
   accordionGroup?: string
   updatedAt?: string

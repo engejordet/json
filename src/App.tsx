@@ -21,7 +21,7 @@ function App() {
   const [adminPassword, setAdminPassword] = useState('')
   const [adminError, setAdminError] = useState<string | null>(null)
 
-  const ADMIN_PASSWORD = 'password'
+  const ADMIN_PASSWORD = 'asd'
 
   const handleUnlockAdmin = () => {
     if (adminPassword === ADMIN_PASSWORD) {
@@ -35,20 +35,27 @@ function App() {
 
   return (
     <AppShell
-      header={{ height: 60 }}
+      header={{ height: 52 }}
       padding={0}
       styles={{
         main: {
-          backgroundColor: '#f8f9fa',
+          backgroundColor: '#05060a',
           padding: 0,
-          minHeight: 'calc(100vh - 60px)',
+          minHeight: 'calc(100vh - 52px)',
           overflow: 'hidden',
         },
       }}
     >
       <AppShell.Header>
-        <Group justify="space-between" h="100%" px="md">
-          <Title order={3}>JSON Snippet Builder & Editor</Title>
+        <Group
+          justify="space-between"
+          align="center"
+          px="md"
+          style={{
+            minHeight: 44,
+          }}
+        >
+          <Title order={3}>JSON editor</Title>
           <SegmentedControl
             value={view}
             onChange={(v) => setView(v as ViewMode)}
@@ -67,7 +74,7 @@ function App() {
           ) : (
             <Box
               style={{
-                height: 'calc(100vh - 60px)',
+                height: 'calc(100vh - 52px)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
